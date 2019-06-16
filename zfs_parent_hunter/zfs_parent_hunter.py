@@ -40,11 +40,14 @@ def run_command(command, verbose=False, shell=True, expected_exit_code=0, stdin=
 @click.option("--verbose", is_flag=True)
 @click.option("--debug", is_flag=True)
 def find_parents(fs, parents, start, end, verbose, debug):
+    assert len(fs.split()) == 1
     if verbose:
-        eprint("looking for parents:", parents)
+        eprint("looking for parent(s):", parents)
     obj_id = start
     while obj_id <= end:
-        assert len(fs.split()) == 1
+        if verbose:
+            pad = 25 * ' ' + '\r'
+            eprint("checking id:", obj_id, end=pad, flush=True)
         command = " ".join(["zdb", "-ddddd", fs, str(obj_id)])
         output = run_command(command, shell=True, verbose=debug, ignore_exit=True)
         for line in output.splitlines():
