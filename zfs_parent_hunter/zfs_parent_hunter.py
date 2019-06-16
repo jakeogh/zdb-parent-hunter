@@ -46,9 +46,9 @@ def find_parents(fs, parents, start, end, verbose, debug):
     obj_id = start
     while obj_id <= end:
         if verbose:
-            pad = 25 * ' ' + '\r'
-            eprint("checking id:", obj_id, end=pad, flush=True)
-        command = " ".join(["zdb", "-ddddd", fs, str(obj_id)])
+            pad = 25 * ' '
+            eprint("checking id:", obj_id, end=pad+'\r', flush=True)
+        command = " ".join(["zdb", "-dddd", fs, str(obj_id)])
         output = run_command(command, shell=True, verbose=debug, ignore_exit=True)
         for line in output.splitlines():
             line = line.decode('utf8')
@@ -57,7 +57,7 @@ def find_parents(fs, parents, start, end, verbose, debug):
                 if debug: eprint("parent_id:", parent_id)
                 if parent_id in parents:
                     if verbose:
-                        print("id:", obj_id, "parent:", parent_id)
+                        print("id:", obj_id, "parent:", parent_id, end=pad)
                     else:
                         print(obj_id)
         if debug:
