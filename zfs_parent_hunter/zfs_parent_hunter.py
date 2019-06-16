@@ -35,7 +35,7 @@ def run_command(command, verbose=False, shell=True, expected_exit_code=0, stdin=
 @click.command()
 @click.argument("fs", type=str, nargs=1)
 @click.argument("parents", type=int, nargs=-1)
-@click.option("--start", type=int, default=0)
+@click.option("--start", type=int, default=1)
 @click.option("--end", default=inf)
 @click.option("--verbose", is_flag=True)
 @click.option("--debug", is_flag=True)
