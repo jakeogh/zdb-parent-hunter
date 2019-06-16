@@ -2,6 +2,9 @@
 
 import sys
 import subprocess
+import pickle
+import time
+from pathlib import Path
 from math import inf
 import click
 
@@ -40,6 +43,12 @@ def run_command(command, verbose=False, shell=True, expected_exit_code=0, stdin=
 @click.option("--verbose", is_flag=True)
 @click.option("--debug", is_flag=True)
 def find_parents(fs, parents, start, end, verbose, debug):
+    timestamp = time.time()
+    data_dir = Path(os.path.expanduser("~/.zfs_parent_hunter"))
+    data_dir.mkdir(exist_ok=True)
+    data_file = Path("_".join('parent_map' + fs + str(os.getpid())))
+    data_pickle = data_dir / data_file
+    parent_map = {}
     assert len(fs.split()) == 1
     if verbose:
         eprint("looking for parent(s):", parents)
@@ -50,10 +59,16 @@ def find_parents(fs, parents, start, end, verbose, debug):
             eprint("checking id:", obj_id, end=pad+'\r', flush=True)
         command = " ".join(["zdb", "-dddd", fs, str(obj_id)])
         output = run_command(command, shell=True, verbose=debug, ignore_exit=True)
+        if len(output) == 0:
+            parent_map[obj_id] = None
         for line in output.splitlines():
             line = line.decode('utf8')
             if '\tparent\t' in line:
                 parent_id = int(line.split()[-1])
+                parent_map[obj_id] = parent_id
+                if (len(parent_map) % 100) == 0:
+                    eprint("saving:", data_pickle)
+                    pickle(parent_map, data_pickle)
                 if debug: eprint("parent_id:", parent_id)
                 if parent_id in parents:
                     if verbose:
