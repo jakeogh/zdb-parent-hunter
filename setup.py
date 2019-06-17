@@ -1,20 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-zfs-parent-hunter - Look for zfs id's with specific parent(s).
+zfs-parent-index - Look for zfs id's with specific parent(s).
 """
-import re
 from setuptools import find_packages, setup
 import sys
 if not sys.version_info[0] == 3:
-    sys.exit("Sorry, Python 3 is required. Use: \'python3 setup.py install\'")
+    sys.exit("Sorry, Python >= 3.7 is required. Use: \'python3 setup.py install\'")
 
 dependencies = []
 version = 0.01
 
 setup(
-    name="zfs-parent-hunter",
+    name="zfs-parent-index",
     version=version,
-    url="https://github.com/jakeogh/zfs-parent-hunter",
+    url="https://github.com/jakeogh/zfs-parent-index",
     license='PUBLIC DOMAIN',
     author="jakeogh",
     author_email="github.com@v6y.net",
@@ -27,7 +26,7 @@ setup(
     install_requires=dependencies,
     entry_points={
         'console_scripts': [
-            'zfs-parent-hunter = zfs_parent_hunter.zfs_parent_hunter:find_parents',
+            'zfs-parent-index = zfs_parent_index.zfs_parent_index:index_parents',
         ],
     },
     classifiers=[

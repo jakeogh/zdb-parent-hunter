@@ -32,8 +32,8 @@ async def parse_zdb(poolname, parents, status, debug, exit_early):
     command = ["zdb", "-L", "-dddd", poolname]
 
     async def reader(command, parents, status, debug, exit_early):
-        timestamp = time.time()
-        data_dir = Path(os.path.expanduser("~/.zfs_parent_hunter"))
+        timestamp = int(time.time())
+        data_dir = Path(os.path.expanduser("~/.zfs_parent_index"))
         data_dir.mkdir(exist_ok=True)
         data_file = Path("_".join(['parent_map', poolname, str(timestamp),
                                    str(os.getpid()), '.pickle']))
@@ -115,7 +115,7 @@ async def parse_zdb(poolname, parents, status, debug, exit_early):
 @click.option("--status", is_flag=True)
 @click.option("--debug", is_flag=True)
 @click.option("--exit-early", type=int, help="(for testing)")
-def find_parents(poolname, parents, status, debug, exit_early):
+def index_parents(poolname, parents, status, debug, exit_early):
     assert len(poolname.split()) == 1
     assert '/' in poolname
     if status:
@@ -128,4 +128,4 @@ def find_parents(poolname, parents, status, debug, exit_early):
 
 if __name__ == "__main__":
     # print("python version:", sys.version)  # 3.7
-    find_parents()
+    index_parents()
