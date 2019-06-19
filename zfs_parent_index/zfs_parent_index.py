@@ -9,6 +9,7 @@ from pathlib import Path
 from asyncio.subprocess import PIPE
 import click
 
+
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
@@ -112,10 +113,11 @@ async def parse_zdb(poolname, parents, status, debug, exit_early):
 @click.command()
 @click.argument("poolname", type=str, nargs=1)
 @click.argument("parents", type=int, nargs=-1)
-@click.option("--status", is_flag=True)
+@click.option("--no-status", is_flag=True)
 @click.option("--debug", is_flag=True)
 @click.option("--exit-early", type=int, help="(for testing)")
-def index_parents(poolname, parents, status, debug, exit_early):
+def index_parents(poolname, parents, no_status, debug, exit_early):
+    status = not no_status
     assert len(poolname.split()) == 1
     assert '/' in poolname
     if status:
