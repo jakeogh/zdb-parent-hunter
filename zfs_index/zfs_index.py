@@ -5,6 +5,7 @@ import os
 import pickle
 import time
 import asyncio
+import attr
 from pathlib import Path
 from asyncio.subprocess import PIPE
 import click
@@ -14,7 +15,7 @@ def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
 
-async def run_command(args, verbose=False):
+async def run_command(args):
     process = await asyncio.create_subprocess_exec(*args, stdout=PIPE)
     async for line in process.stdout:
         yield line
@@ -29,18 +30,21 @@ def print_status(object_id, pad, count, start):
     eprint("checking id:", object_id, "@", int(rate), "id/sec", end=pad + '\r', flush=True)
 
 
-async def parse_zdb(poolname, parents, status, debug, exit_early):
+def generate_pickle_file(note, poolname, timestamp):
+    data_dir = Path(os.path.expanduser("~/.zfs_index"))
+    data_dir.mkdir(exist_ok=True)
+    data_file = Path("_".join([note, poolname, str(timestamp), str(os.getpid()), '.pickle']))
+    pickle_file = data_dir / data_file
+    pickle_file.parent.mkdir(exist_ok=True)
+    return pickle_file
+
+
+async def parse_zdb_parents(poolname, parents, status, debug, exit_early):
     command = ["zdb", "-L", "-dddd", poolname]
 
     async def reader(command, parents, status, debug, exit_early):
         timestamp = int(time.time())
-        data_dir = Path(os.path.expanduser("~/.zfs_parent_index"))
-        data_dir.mkdir(exist_ok=True)
-        data_file = Path("_".join(['parent_map', poolname, str(timestamp),
-                                   str(os.getpid()), '.pickle']))
-        pickle_file = data_dir / data_file
-        pickle_file.parent.mkdir(exist_ok=True)
-
+        pickle_file = generate_pickle_file('parent_map', poolname, timestamp)
         parent_map = {}
         pad = 25 * ' '
         marker = b'    Object  lvl   iblk   dblk  dsize  dnsize  lsize   %full  type\n'
@@ -110,13 +114,95 @@ async def parse_zdb(poolname, parents, status, debug, exit_early):
     await reader(command, parents, status, debug, exit_early)
 
 
-@click.command()
+@attr.s(auto_attribs=True)
+class dmu_dnode():
+    offset: int
+    level: int
+    dva: dict
+    checksum: str
+    compress: str
+    encryption: bool
+    size: str
+    birth: str
+    fill: int
+
+
+#" 0      L0 DVA[0]=<0:11c7909e200:800> DVA[1]=<0:12c51e31200:800> [L0 DMU dnode] fletcher4 lz4 unencrypted"
+#"LE contiguous unique double size=4000L/800P birth=492396L/492396P fill=16"
+
+
+async def parse_zdb_l0(poolname, status, debug, exit_early):
+    command = ["zdb", "-L", "-ddddbbbbvv", poolname, "0"]
+    if debug: eprint(command)
+    async def reader(command, status, debug, exit_early):
+        timestamp = int(time.time())
+        pickle_file = generate_pickle_file('L0_list', poolname, timestamp)
+        node_list = []
+        pad = 25 * ' '
+        marker = b'[L0 DMU dnode]'
+        async for line in run_command(command):
+            if debug:
+                eprint(line)
+            if b"L0 HOLE" in line:
+                continue
+            if marker in line:
+                line = line.split()
+                dva1 = line[2].split(b'<')[-1][:-1]
+                dva2 = line[2].split(b'<')[-1][:-1]
+                d = dmu_dnode(
+                    offset=line[0],
+                    level=line[1][-1],
+                    dva={0: dva1, 1: dva2},
+                    checksum=line[7],
+                    compress=line[8],
+                    encryption=(True if line[9] == b'encrypted' else False),
+                    size=line[14].split(b'=')[-1],
+                    birth=line[15].split(b'=')[-1],
+                    fill=line[16].split(b'=')[-1])
+
+                node_list.append(d)
+                if status and not debug:
+                    lpm = len(node_list)
+                    print_status(d.offset, pad, lpm, timestamp)
+
+        with open(pickle_file, 'wb') as fh:
+            pickle.dump(node_list, fh)
+
+        if status:
+            dnode_count = len(node_list)
+            eprint("Done. {0} L0 dnodes saved in:\n{1}\n".format(dnode_count, pickle_file))
+
+    await reader(command, status, debug, exit_early)
+
+
+@click.group()
+@click.pass_context
+def cli(ctx):
+    pass
+
+
+@cli.command()
+@click.argument("poolname", type=str, nargs=1)
+@click.option("--no-status", is_flag=True)
+@click.option("--debug", is_flag=True)
+@click.option("--exit-early", type=int, help="(for testing)")
+def dmu_dnode_L0(poolname, no_status, debug, exit_early):
+    status = not no_status
+    assert len(poolname.split()) == 1
+    assert '/' in poolname
+    if status:
+        eprint("gathering all L0 entries from DMU dnode")
+
+    asyncio.run(parse_zdb_l0(poolname, status, debug, exit_early))
+
+
+@cli.command()
 @click.argument("poolname", type=str, nargs=1)
 @click.argument("parents", type=int, nargs=-1)
 @click.option("--no-status", is_flag=True)
 @click.option("--debug", is_flag=True)
 @click.option("--exit-early", type=int, help="(for testing)")
-def index_parents(poolname, parents, no_status, debug, exit_early):
+def parents(poolname, parents, no_status, debug, exit_early):
     status = not no_status
     assert len(poolname.split()) == 1
     assert '/' in poolname
@@ -125,9 +211,15 @@ def index_parents(poolname, parents, no_status, debug, exit_early):
         if parents:
             eprint("looking for id's with parent(s):", *parents)
 
-    asyncio.run(parse_zdb(poolname, parents, status, debug, exit_early))
+    asyncio.run(parse_zdb_parents(poolname, parents, status, debug, exit_early))
 
 
 if __name__ == "__main__":
     # print("python version:", sys.version)  # 3.7
-    index_parents()
+    cli()
+
+
+#" 0      L0 DVA[0]=<0:11c7909e200:800> DVA[1]=<0:12c51e31200:800> [L0 DMU dnode] fletcher4 lz4 unencrypted"
+#"LE contiguous unique double size=4000L/800P birth=492396L/492396P fill=16"
+#"zdb poolz0_2TB_A/iridb_data_index -vvvv 0 -dddddbbbbb | wc -l"
+#"3628520"

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-zfs-parent-index - Look for zfs id's with specific parent(s).
+zfs-index - Look for zfs id's with specific parent(s).
 """
 from setuptools import find_packages, setup
 import sys
@@ -11,9 +11,9 @@ dependencies = []
 version = 0.01
 
 setup(
-    name="zfs-parent-index",
+    name="zfs-index",
     version=version,
-    url="https://github.com/jakeogh/zfs-parent-index",
+    url="https://github.com/jakeogh/zfs-index",
     license='PUBLIC DOMAIN',
     author="jakeogh",
     author_email="github.com@v6y.net",
@@ -26,7 +26,7 @@ setup(
     install_requires=dependencies,
     entry_points={
         'console_scripts': [
-            'zfs-parent-index = zfs_parent_index.zfs_parent_index:index_parents',
+            'zfs-index = zfs_index.zfs_index:cli',
         ],
     },
     classifiers=[
