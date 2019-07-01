@@ -2,18 +2,21 @@
 
 import sys
 import os
-import pickle as pikle
 import time
 import asyncio
 import pprint
 import attr
 import copy
+import shelve  # shelve is broken, with writeback=True, it's not waiting until I call .sync() to persist to disk
+from sqlalchemy import create_engine
 from typing import Any
 from functools import partial
 from pathlib import Path
 from asyncio.subprocess import PIPE
 from itertools import zip_longest
 import click
+
+engine = create_engine('sqlite:///:memory:', echo=True)
 
 
 def eprint(*args, **kwargs):
@@ -41,14 +44,14 @@ def print_status(object_id, pad, count, start):
     eprint("checking id:", object_id, "@", int(rate), "id/sec", end=pad + '\r', flush=True)
 
 
-def generate_pickle_file(note, poolname, timestamp):
-    print("note:", note, "poolname:", poolname)
+def generate_shelve_file(poolname):
+    timestamp = int(time.time())
     data_dir = Path(os.path.expanduser("~/.zfs_index"))
     data_dir.mkdir(exist_ok=True)
-    data_file = Path("_".join([note, poolname, str(timestamp), str(os.getpid()), '.pickle']))
-    pickle_file = data_dir / data_file
-    pickle_file.parent.mkdir(exist_ok=True)
-    return pickle_file
+    data_file = Path("_".join([poolname, str(timestamp), str(os.getpid()), '.pickle']))
+    shelve_file = data_dir / data_file
+    shelve_file.parent.mkdir(exist_ok=True)
+    return str(shelve_file)  # as of py 3.7, shelve isnt supporting path-like objects
 
 
 def pathify(path):
@@ -65,7 +68,7 @@ class Dnode():
     dnsize:   int = attr.ib(converter=int)                                                                    # noqa: E241
     lsize:    int = attr.ib(converter=int)                                                                    # noqa: E241
     full:   float = attr.ib(converter=float)                                                                  # noqa: E241
-    dntype:   str = attr.ib(converter=partial(str, encoding='utf8'))                                          # noqa: E241
+    type:     str = attr.ib(converter=partial(str, encoding='utf8'))                                          # noqa: E241
     flags:    str = attr.ib(converter=attr.converters.optional(partial(str, encoding='utf8')), default=None)  # noqa: E241
     maxblkid: int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
     path:   bytes = attr.ib(converter=attr.converters.optional(pathify), default=None)                        # noqa: E241
@@ -202,7 +205,7 @@ MATCHES = \
     }
 
 
-def mutate_if_match(line, dn, uno, oline):
+def mutate_if_match(line, dn, writeback, oline):
     for key in MATCHES.keys():
         match = MATCHES[key]
         if line.startswith(match):
@@ -212,7 +215,7 @@ def mutate_if_match(line, dn, uno, oline):
                 ans = ans[:-1]
             else:
                 ans = carve(line, match)
-            if uno:
+            if writeback:
                 if getattr(dn, key):
                     temp_dn = copy.deepcopy(dn)
                     setattr(temp_dn, key, ans)
@@ -223,17 +226,17 @@ def mutate_if_match(line, dn, uno, oline):
     return False
 
 
-async def reader(command, status, debug, exit_early, poolname, dnode_map=None):
-    uno = bool(dnode_map)
-    if dnode_map is None: dnode_map = {}
+async def reader(command, status, debug, exit_early, poolname, shelve_file):
+    dnode_map = shelve.open(shelve_file, writeback=True)  # too slow unless we call sync() only once in awhile
+    modify = bool(dnode_map)
     timestamp = int(time.time())
-    pickle_file = generate_pickle_file('parent_map', poolname, timestamp)
     pad = 25 * ' '
     marker = norm(b'    Object  lvl   iblk   dblk  dsize  dnsize  lsize   %full  type\n')
     found_marker = False
     found_id = False
     object_id = None
     line_num = 0
+    dn = None
     async for line in run_command(command):
         oline = line
         if debug > 1: eprint(str(line_num) + ":", oline)
@@ -241,7 +244,7 @@ async def reader(command, status, debug, exit_early, poolname, dnode_map=None):
         line_num += 1
         if not line: continue
         if found_id:
-            if mutate_if_match(line, dnode_map[object_id], uno, oline):
+            if mutate_if_match(line, dn, modify, oline):
                 continue
 
             if skip(line):
@@ -254,22 +257,34 @@ async def reader(command, status, debug, exit_early, poolname, dnode_map=None):
 
             if debug: eprint("unmatched line:", line)
 
-        if not (len(dnode_map.keys()) % 40000):
+        if not (len(dnode_map.keys()) % 500000):
             if dnode_map.keys():
                 if debug:
-                    eprint("saving:", pickle_file)
-                with open(pickle_file, 'wb') as fh:
-                    pikle.dump(dnode_map, fh)
+                    eprint("saving:", shelve_file)
+                dnode_map.sync()
 
         if found_marker:
             assert not found_id
             sline = line.split()
-            object_id = int(sline.pop(0))
-            dn_type = b" ".join(sline[7:])
-            if not uno:
-                dnode_map[object_id] = Dnode(object_id, *sline[:7], dn_type)
-            else:
-                assert object_id in dnode_map.keys()
+            if dn:  # save prev dn
+                #eprint("saving object_id:", object_id)
+                assert object_id is not None
+                if not modify:  # write new dn to db
+                    dnode_map[str(object_id)] = dn  # limitation of shelve, keys are str()
+                else:
+                    assert str(object_id) in dnode_map.keys()
+
+                dn = None
+                object_id = None
+
+            if not dn:
+                assert not object_id
+                object_id = int(sline.pop(0))
+                if modify:  # get pre-existing dn to mutate
+                    dn = dnode_map[str(object_id)]
+                else:
+                    dn_type = b" ".join(sline[7:])
+                    dn = Dnode(object_id, *sline[:7], dn_type)
 
             if status:
                 lpm = len(dnode_map)
@@ -290,36 +305,45 @@ async def reader(command, status, debug, exit_early, poolname, dnode_map=None):
                 eprint("\n\nExiting early after {0} id's".format(lpm))
                 break
 
-    with open(pickle_file, 'wb') as fh:
-        pikle.dump(dnode_map, fh)
-
     if debug > 1: pprint.pprint(dnode_map)
 
     if status:
         map_count = len(dnode_map)
-        eprint("Done. {0} dnode records saved in:\n{1}\n".format(map_count, pickle_file))
+        eprint("Done. {0} dnode records saved in:\n{1}\n".format(map_count, shelve_file))
 
-    return dnode_map
+    dnode_map.close()
+    return
 
 
 async def parse_zdb_dnodes(poolname, status, debug, exit_early):
     path_command =  ["zdb", poolname, "-L", "-dddd", "-v", "-P", "--"]  # need to skip 0 or takes forever
     command =       ["zdb", poolname, "-L", "-dddd", "-P"]              # wont get paths
+    shelve_file = generate_shelve_file(poolname)
 
-    dnode_map = await reader(command, status, debug, exit_early, poolname)
+    await reader(command, status, debug, exit_early, poolname, shelve_file)
 
     file_dnodes = []
+    dnode_map = shelve.open(shelve_file, writeback=False)
     for key in dnode_map.keys():
-        if dnode_map[key].dntype == 'ZFS plain file':
+        if dnode_map[key].type == 'ZFS plain file':
             file_dnodes.append(str(key))
+    dnode_map.close()
 
     #debug = 2
     exit_early = False
 
-    for group in grouper(file_dnodes, 5):
+    for group in grouper(file_dnodes, 1000):
         group = [g for g in group if g]
         next_command = path_command + group
-        dnode_map = await reader(next_command, status, debug, exit_early, poolname, dnode_map)
+        await reader(next_command, status, debug, exit_early, poolname, shelve_file)
+
+
+def validate_pool(ctx, param, value):
+    try:
+        assert not value.startswith('/')
+    except AssertionError:
+        raise click.BadParameter('ZFS pool name must not start with "/"')
+    return value
 
 
 @click.group()
@@ -329,11 +353,11 @@ def cli(ctx):
 
 
 @cli.command()
-@click.argument("poolname", type=str, nargs=1)
+@click.argument("poolname", type=str, nargs=1, callback=validate_pool)
 @click.option("--no-status", is_flag=True)
 @click.option("--debug", count=True)
 @click.option("--exit-early", type=int, help="(for testing)")
-def dnodes(poolname, no_status, debug, exit_early):
+def index(poolname, no_status, debug, exit_early):
     status = not no_status
     assert len(poolname.split()) == 1
     assert '/' in poolname
@@ -345,9 +369,8 @@ def dnodes(poolname, no_status, debug, exit_early):
 
 @cli.command()
 @click.argument("pickle", type=click.Path(exists=True, dir_okay=False, allow_dash=True))
-def load_pickle(pickle):
-    with open(pickle, 'rb') as fp:
-        p = pikle.load(fp)
+def load(pickle):
+    p = shelve.open(pickle)
 
     eprint("len(p):", len(p))
     import IPython; IPython.embed()
@@ -358,64 +381,6 @@ if __name__ == "__main__":
     cli()
 
 
-#async def parse_zdb_parents(poolname, parents, status, debug, exit_early):
-#    command = ["zdb", "-L", "-dddd", poolname]
-#
-#    async def reader(command, parents, status, debug, exit_early):
-#        timestamp = int(time.time())
-#        pickle_file = generate_pickle_file('parent_map', poolname, timestamp)
-#        parent_map = {}
-#        pad = 25 * ' '
-#        marker = b'    Object  lvl   iblk   dblk  dsize  dnsize  lsize   %full  type\n'
-#        parent_marker = b'\tparent\t'
-#        found_marker = False
-#        found_id = False
-#        object_id = None
-#        async for line in run_command(command):
-#            if found_id:
-#                assert not found_marker
-#                if line == marker:  # no parent
-#                    found_marker = True
-#                    found_id = False
-#                    parent_map[object_id] = None
-#                    continue
-#                if line.startswith(parent_marker):
-#                    parent_id = int(line.split(parent_marker)[-1].strip())
-#                    found_id = False
-#                    assert object_id not in parent_map.keys()
-#                    parent_map[object_id] = parent_id
-#                    if parent_id in parents:
-#                        print_match(object_id, parent_id, pad)
-#
-#                    if not (len(parent_map.keys()) % 40000):
-#                        if parent_map.keys():
-#                            if debug:
-#                                eprint("saving:", pickle_file)
-#                            with open(pickle_file, 'wb') as fh:
-#                                pickle.dump(parent_map, fh)
-#
-#            if found_marker:
-#                assert not found_id
-#                object_id = int(line.split()[0])
-#                if status:
-#                    lpm = len(parent_map)
-#                    print_status(object_id, pad, lpm, timestamp)
-#                found_id = True
-#                found_marker = False
-#                continue
-#            if line == marker:
-#                found_marker = True
-#
-#            if exit_early:
-#                lpm = len(parent_map)
-#                if lpm >= exit_early:
-#                    import warnings
-#                    warnings.filterwarnings("ignore")
-#                    eprint("\n\nExiting early after {0} id's".format(lpm))
-#                    break
-#
-#        with open(pickle_file, 'wb') as fh:
-#            pickle.dump(parent_map, fh)
 #
 #        if status:
 #            map_count = len(parent_map)
@@ -424,7 +389,7 @@ if __name__ == "__main__":
 #            none_count = map_count - len(all_parents)
 #            with_parent_count = map_count - none_count
 #            assert with_parent_count == len(all_parents)
-#            eprint("Done. {0} id->parent mappings saved in:\n{1}\n".format(map_count, pickle_file))
+#            eprint("Done. {0} id->parent mappings saved in:\n{1}\n".format(map_count, shelve_file))
 #            eprint("# of id's:", map_count)
 #            eprint("# of id's with no parent:", none_count)
 #            eprint("# of id's with parent:", with_parent_count)
@@ -486,7 +451,7 @@ if __name__ == "__main__":
 #    if debug: eprint(command)
 #    async def reader(command, status, debug, exit_early):
 #        timestamp = int(time.time())
-#        pickle_file = generate_pickle_file('L0_list', poolname, timestamp)
+#        shelve_file = generate_shelve_file('L0_list', poolname, timestamp)
 #        node_list = []
 #        pad = 25 * ' '
 #        marker = b'[L0 DMU dnode]'
@@ -515,12 +480,12 @@ if __name__ == "__main__":
 #                    lpm = len(node_list)
 #                    print_status(d.offset, pad, lpm, timestamp)
 #
-#        with open(pickle_file, 'wb') as fh:
+#        with open(shelve_file, 'wb') as fh:
 #            pickle.dump(node_list, fh)
 #
 #        if status:
 #            dnode_count = len(node_list)
-#            eprint("Done. {0} L0 dnodes saved in:\n{1}\n".format(dnode_count, pickle_file))
+#            eprint("Done. {0} L0 dnodes saved in:\n{1}\n".format(dnode_count, shelve_file))
 #
 #    await reader(command, status, debug, exit_early)
 
