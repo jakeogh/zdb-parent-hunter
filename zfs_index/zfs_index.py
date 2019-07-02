@@ -247,7 +247,7 @@ def mutate_if_match(line, dn, writeback, oline):
 
 async def reader(command, status, debug, exit_early, poolname, shelve_file):
     dnode_map = shelve.open(shelve_file, writeback=True)  # too slow unless we call sync() only once in awhile
-    modify = bool(dnode_map)
+    modify_existing = bool(dnode_map)
     timestamp = int(time.time())
     pad = 25 * ' '
     marker = norm(b'    Object  lvl   iblk   dblk  dsize  dnsize  lsize   %full  type\n')
@@ -263,7 +263,7 @@ async def reader(command, status, debug, exit_early, poolname, shelve_file):
         line_num += 1
         if not line: continue
         if found_id:
-            if mutate_if_match(line, dn, modify, oline):
+            if mutate_if_match(line, dn, modify_existing, oline):
                 continue
 
             if skip(line):
@@ -288,10 +288,10 @@ async def reader(command, status, debug, exit_early, poolname, shelve_file):
             if dn:  # save prev dn
                 #eprint("saving object_id:", object_id)
                 assert object_id is not None
-                if not modify:  # write new dn to db
-                    dnode_map[str(object_id)] = dn  # limitation of shelve, keys are str()
+                if not modify_existing:  # write new dn to db
+                    dnode_map[object_id] = dn  # limitation of shelve, keys are str()
                 else:
-                    assert str(object_id) in dnode_map.keys()
+                    assert object_id in dnode_map.keys()
 
                 #import IPython; IPython.embed()
                 dn = None
@@ -299,9 +299,9 @@ async def reader(command, status, debug, exit_early, poolname, shelve_file):
 
             if not dn:
                 assert not object_id
-                object_id = int(sline.pop(0))
-                if modify:  # get pre-existing dn to mutate
-                    dn = dnode_map[str(object_id)]
+                object_id = str(int(sline.pop(0)))
+                if modify_existing:  # get pre-existing dn to mutate
+                    dn = dnode_map[object_id]
                 else:
                     dn_type = str(b" ".join(sline[7:]), encoding='utf8')
                     dn = Dnode(object_id, *sline[:7], dn_type)
@@ -323,7 +323,14 @@ async def reader(command, status, debug, exit_early, poolname, shelve_file):
                 import warnings
                 warnings.filterwarnings("ignore")
                 eprint("\n\nExiting early after {0} id's".format(lpm))
+                if not modify_existing:
+                    if object_id not in dnode_map.keys():
+                        dnode_map[object_id] = dn
                 break
+
+    if not modify_existing:
+        if object_id not in dnode_map.keys():
+            dnode_map[object_id] = dn
 
     if debug > 1: pprint.pprint(dnode_map)
 
@@ -335,10 +342,13 @@ async def reader(command, status, debug, exit_early, poolname, shelve_file):
     return
 
 
-async def parse_zdb_dnodes(poolname, status, debug, exit_early):
+async def parse_zdb_dnodes(poolname, inodes, status, debug, exit_early):
     path_command =  ["zdb", poolname, "-L", "-dddd", "-v", "-P", "--"]  # need to skip 0 or takes forever   # noqa: E222
     command =       ["zdb", poolname, "-L", "-dddd", "-P"]              # wont get paths                    # noqa: E222
     shelve_file = generate_shelve_file(poolname)
+
+    for inode in inodes:
+        command.append(str(inode))
 
     await reader(command, status, debug, exit_early, poolname, shelve_file)
 
@@ -351,6 +361,7 @@ async def parse_zdb_dnodes(poolname, status, debug, exit_early):
 
     #debug = 2
     exit_early = False
+    inodes = None
 
     for group in grouper(file_dnodes, 1000):
         group = [g for g in group if g]
@@ -374,17 +385,18 @@ def cli(ctx):
 
 @cli.command()
 @click.argument("poolname", type=str, nargs=1, callback=validate_pool)
+@click.argument("inodes", type=int, nargs=-1)
 @click.option("--no-status", is_flag=True)
 @click.option("--debug", count=True)
 @click.option("--exit-early", type=int, help="(for testing)")
-def index(poolname, no_status, debug, exit_early):
+def index(poolname, inodes, no_status, debug, exit_early):
     status = not no_status
     assert len(poolname.split()) == 1
     assert '/' in poolname
     if status:
         eprint("gathering all dnodes")
 
-    asyncio.run(parse_zdb_dnodes(poolname, status, debug, exit_early))
+    asyncio.run(parse_zdb_dnodes(poolname, inodes, status, debug, exit_early))
 
 
 @cli.command()
