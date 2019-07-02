@@ -10,28 +10,48 @@ from typing import Any
 from pathlib import Path
 from itertools import zip_longest
 import copy
-import shelve  # shelve is broken, with writeback=True, it's not waiting until I call .sync() to persist to disk
+import shelve   # shelve is broken, with writeback=True, it's not waiting until I call .sync() to persist to disk
 import attr
 from attr.converters import optional
-import cattr  # noqa: F401
+import cattr    # noqa: F401
 from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column
+from sqlalchemy.types import BigInteger, Float, String, LargeBinary
 import click
 
 #pylint: disable=missing-docstring
 #pylint: disable=too-few-public-methods
 #pylint: disable=multiple-statements
+#pylint: disable=invalid-name
 
-ENGINE = create_engine('sqlite:///:memory:', echo=True)
+DB_FILE = "/home/user/.zfs_index/sqlite." + str(time.time()) + '.db'
+DB_PATH = 'sqlite:///' + DB_FILE
+ENGINE = create_engine(DB_PATH, echo=True)
+Base = declarative_base()
+
+_print = print
 
 
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
+def print(*args, **kwargs):
+    _print(*args, file=sys.stderr, **kwargs)
+
+
+eprint = print
 
 
 async def run_command(args):
-    eprint("command:", ' '.join(args))
+    eprint("command:", ' '.join(args[:15]), "...")
     process = await asyncio.create_subprocess_exec(*args, stdout=PIPE)
+    #print(process.returncode)  # None
+    #time.sleep(3)  # long enough
+    #print(process.returncode)  # still None
+    #if process.returncode is not None:  # still None
+    #    quit(1)
+
     async for line in process.stdout:
+        #if process.returncode is not None: # stillllll None
+        #    if line:
         yield line
 
 
@@ -78,30 +98,30 @@ def validate(instance, attribute, value):
 #pylint: disable=bad-whitespace
 @attr.s(auto_attribs=True)
 class Dnode():
-    inode:    int = attr.ib(validator=validate, converter=int)                               # noqa: E241
-    lvl:      int = attr.ib(validator=validate, converter=int)                               # noqa: E241
-    iblk:     int = attr.ib(validator=validate, converter=int)                               # noqa: E241
-    dblk:     int = attr.ib(validator=validate, converter=int)                               # noqa: E241
-    dsize:    int = attr.ib(validator=validate, converter=int)                               # noqa: E241
-    dnsize:   int = attr.ib(validator=validate, converter=int)                               # noqa: E241
-    lsize:    int = attr.ib(validator=validate, converter=int)                               # noqa: E241
-    full:   float = attr.ib(validator=validate, converter=float)                             # noqa: E241
-    type:     str = attr.ib(validator=validate, converter=strify)                            # noqa: E241
-    flags:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
-    maxblkid: int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
-    path:   bytes = attr.ib(validator=validate,                              default=None)   # noqa: E241
-    uid:      int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
-    gid:      int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
-    atime:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
-    mtime:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
-    ctime:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
-    crtime:   str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
-    gen:      int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
-    mode:     int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
-    size:     int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
-    parent:   int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
-    links:    int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
-    pflags:   int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+    inode:    int = attr.ib(validator=validate, converter=int)                              # noqa: E241
+    lvl:      int = attr.ib(validator=validate, converter=int)                              # noqa: E241
+    iblk:     int = attr.ib(validator=validate, converter=int)                              # noqa: E241
+    dblk:     int = attr.ib(validator=validate, converter=int)                              # noqa: E241
+    dsize:    int = attr.ib(validator=validate, converter=int)                              # noqa: E241
+    dnsize:   int = attr.ib(validator=validate, converter=int)                              # noqa: E241
+    lsize:    int = attr.ib(validator=validate, converter=int)                              # noqa: E241
+    full:   float = attr.ib(validator=validate, converter=float)                            # noqa: E241
+    type:     str = attr.ib(validator=validate, converter=strify)                           # noqa: E241
+    flags:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)  # noqa: E241
+    maxblkid: int = attr.ib(validator=validate, converter=optional(int),     default=None)  # noqa: E241
+    path:   bytes = attr.ib(validator=validate,                              default=None)  # noqa: E241
+    uid:      int = attr.ib(validator=validate, converter=optional(int),     default=None)  # noqa: E241
+    gid:      int = attr.ib(validator=validate, converter=optional(int),     default=None)  # noqa: E241
+    atime:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)  # noqa: E241
+    mtime:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)  # noqa: E241
+    ctime:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)  # noqa: E241
+    crtime:   str = attr.ib(validator=validate, converter=optional(strify),  default=None)  # noqa: E241
+    gen:      int = attr.ib(validator=validate, converter=optional(int),     default=None)  # noqa: E241
+    mode:     int = attr.ib(validator=validate, converter=optional(int),     default=None)  # noqa: E241
+    size:     int = attr.ib(validator=validate, converter=optional(int),     default=None)  # noqa: E241
+    parent:   int = attr.ib(validator=validate, converter=optional(int),     default=None)  # noqa: E241
+    links:    int = attr.ib(validator=validate, converter=optional(int),     default=None)  # noqa: E241
+    pflags:   int = attr.ib(validator=validate, converter=optional(int),     default=None)  # noqa: E241
 #pylint: enable=bad-whitespace
 
     def __attrs_post_init__(self):
@@ -125,6 +145,32 @@ class Dnode():
                 attribute_validator(self, attribute, value)
 
         super().__setattr__(name, value)
+
+
+def generate_sqla(cls):
+    #first attribute is always the primary key
+    typemap = \
+        {
+            int: BigInteger,
+            str: String,
+            float: Float,
+            bytes: LargeBinary,
+        }
+
+    dst_dict = {"__tablename__": "dnodes"}
+    for i, src_attr in enumerate(attr.fields(cls)):
+        dst_args = {}
+        dst_sq_type = typemap[src_attr.type]
+        if i == 0:
+            dst_args["primary_key"] = True
+
+        dst_dict[src_attr.name] = Column(dst_sq_type, **dst_args)
+
+    return type('SQADnode', (Base,), dst_dict)
+
+
+SQADnode = generate_sqla(Dnode)
+Base.metadata.create_all(ENGINE)
 
 
 # checking assumptions. rather pointless.
@@ -363,7 +409,8 @@ async def parse_zdb_dnodes(poolname, inodes, status, debug, exit_early):
     exit_early = False
     inodes = None
 
-    for group in grouper(file_dnodes, 1000):
+    file_dnodes = sorted(file_dnodes, key=int)
+    for group in grouper(file_dnodes, 2000):
         group = [g for g in group if g]
         next_command = path_command + group
         await reader(next_command, status, debug, exit_early, poolname, shelve_file)
