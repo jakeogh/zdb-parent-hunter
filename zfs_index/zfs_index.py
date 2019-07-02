@@ -4,19 +4,24 @@ import sys
 import os
 import time
 import asyncio
+from asyncio.subprocess import PIPE
 import pprint
-import attr
+from typing import Any
+from pathlib import Path
+from itertools import zip_longest
 import copy
 import shelve  # shelve is broken, with writeback=True, it's not waiting until I call .sync() to persist to disk
+import attr
+from attr.converters import optional
+import cattr  # noqa: F401
 from sqlalchemy import create_engine
-from typing import Any
-from functools import partial
-from pathlib import Path
-from asyncio.subprocess import PIPE
-from itertools import zip_longest
 import click
 
-engine = create_engine('sqlite:///:memory:', echo=True)
+#pylint: disable=missing-docstring
+#pylint: disable=too-few-public-methods
+#pylint: disable=multiple-statements
+
+ENGINE = create_engine('sqlite:///:memory:', echo=True)
 
 
 def eprint(*args, **kwargs):
@@ -30,8 +35,8 @@ async def run_command(args):
         yield line
 
 
-def grouper(iterable, n, fillvalue=None):
-    args = [iter(iterable)] * n
+def grouper(iterable, num, fillvalue=None):
+    args = [iter(iterable)] * num
     return zip_longest(*args, fillvalue=fillvalue)
 
 
@@ -54,36 +59,50 @@ def generate_shelve_file(poolname):
     return str(shelve_file)  # as of py 3.7, shelve isnt supporting path-like objects
 
 
-def pathify(path):
-    return Path(os.fsdecode(path))
+def strify(thing):
+    try:
+        return str(thing, encoding='utf8')
+    except TypeError:
+        assert isinstance(thing, str)
+        return thing
 
 
+def validate(instance, attribute, value):
+    if value is None:  # should instead "if value is attribute.default"
+        if attribute.default is None:  # .default == NOTHING if not set
+            return
+    else:
+        assert isinstance(value, attribute.type)
+
+
+#pylint: disable=bad-whitespace
 @attr.s(auto_attribs=True)
 class Dnode():
-    inode:    int = attr.ib(converter=int)                                                                    # noqa: E241
-    lvl:      int = attr.ib(converter=int)                                                                    # noqa: E241
-    iblk:     int = attr.ib(converter=int)                                                                    # noqa: E241
-    dblk:     int = attr.ib(converter=int)                                                                    # noqa: E241
-    dsize:    int = attr.ib(converter=int)                                                                    # noqa: E241
-    dnsize:   int = attr.ib(converter=int)                                                                    # noqa: E241
-    lsize:    int = attr.ib(converter=int)                                                                    # noqa: E241
-    full:   float = attr.ib(converter=float)                                                                  # noqa: E241
-    type:     str = attr.ib(converter=partial(str, encoding='utf8'))                                          # noqa: E241
-    flags:    str = attr.ib(converter=attr.converters.optional(partial(str, encoding='utf8')), default=None)  # noqa: E241
-    maxblkid: int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
-    path:   bytes = attr.ib(converter=attr.converters.optional(pathify), default=None)                        # noqa: E241
-    uid:      int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
-    gid:      int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
-    atime:    str = attr.ib(converter=attr.converters.optional(partial(str, encoding='utf8')), default=None)  # noqa: E241
-    mtime:    str = attr.ib(converter=attr.converters.optional(partial(str, encoding='utf8')), default=None)  # noqa: E241
-    ctime:    str = attr.ib(converter=attr.converters.optional(partial(str, encoding='utf8')), default=None)  # noqa: E241
-    crtime:   str = attr.ib(converter=attr.converters.optional(partial(str, encoding='utf8')), default=None)  # noqa: E241
-    gen:      int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
-    mode:     int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
-    size:     int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
-    parent:   int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
-    links:    int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
-    pflags:   int = attr.ib(converter=attr.converters.optional(int), default=None)                            # noqa: E241
+    inode:    int = attr.ib(validator=validate, converter=int)                               # noqa: E241
+    lvl:      int = attr.ib(validator=validate, converter=int)                               # noqa: E241
+    iblk:     int = attr.ib(validator=validate, converter=int)                               # noqa: E241
+    dblk:     int = attr.ib(validator=validate, converter=int)                               # noqa: E241
+    dsize:    int = attr.ib(validator=validate, converter=int)                               # noqa: E241
+    dnsize:   int = attr.ib(validator=validate, converter=int)                               # noqa: E241
+    lsize:    int = attr.ib(validator=validate, converter=int)                               # noqa: E241
+    full:   float = attr.ib(validator=validate, converter=float)                             # noqa: E241
+    type:     str = attr.ib(validator=validate, converter=strify)                            # noqa: E241
+    flags:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
+    maxblkid: int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+    path:   bytes = attr.ib(validator=validate,                              default=None)   # noqa: E241
+    uid:      int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+    gid:      int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+    atime:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
+    mtime:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
+    ctime:    str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
+    crtime:   str = attr.ib(validator=validate, converter=optional(strify),  default=None)   # noqa: E241
+    gen:      int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+    mode:     int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+    size:     int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+    parent:   int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+    links:    int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+    pflags:   int = attr.ib(validator=validate, converter=optional(int),     default=None)   # noqa: E241
+#pylint: enable=bad-whitespace
 
     def __attrs_post_init__(self):
         self._initialized = True
@@ -182,7 +201,7 @@ def norm(line):
 
 
 def carve(line, match):
-    return b' '.join(line.split(match)[1:]).strip()
+    return str(b' '.join(line.split(match)[1:]).strip(), encoding='utf8')
 
 
 MATCHES = \
@@ -257,7 +276,7 @@ async def reader(command, status, debug, exit_early, poolname, shelve_file):
 
             if debug: eprint("unmatched line:", line)
 
-        if not (len(dnode_map.keys()) % 500000):
+        if not len(dnode_map.keys()) % 500000:
             if dnode_map.keys():
                 if debug:
                     eprint("saving:", shelve_file)
@@ -274,6 +293,7 @@ async def reader(command, status, debug, exit_early, poolname, shelve_file):
                 else:
                     assert str(object_id) in dnode_map.keys()
 
+                #import IPython; IPython.embed()
                 dn = None
                 object_id = None
 
@@ -283,7 +303,7 @@ async def reader(command, status, debug, exit_early, poolname, shelve_file):
                 if modify:  # get pre-existing dn to mutate
                     dn = dnode_map[str(object_id)]
                 else:
-                    dn_type = b" ".join(sline[7:])
+                    dn_type = str(b" ".join(sline[7:]), encoding='utf8')
                     dn = Dnode(object_id, *sline[:7], dn_type)
 
             if status:
@@ -316,8 +336,8 @@ async def reader(command, status, debug, exit_early, poolname, shelve_file):
 
 
 async def parse_zdb_dnodes(poolname, status, debug, exit_early):
-    path_command =  ["zdb", poolname, "-L", "-dddd", "-v", "-P", "--"]  # need to skip 0 or takes forever
-    command =       ["zdb", poolname, "-L", "-dddd", "-P"]              # wont get paths
+    path_command =  ["zdb", poolname, "-L", "-dddd", "-v", "-P", "--"]  # need to skip 0 or takes forever   # noqa: E222
+    command =       ["zdb", poolname, "-L", "-dddd", "-P"]              # wont get paths                    # noqa: E222
     shelve_file = generate_shelve_file(poolname)
 
     await reader(command, status, debug, exit_early, poolname, shelve_file)
@@ -373,119 +393,14 @@ def load(pickle):
     p = shelve.open(pickle)
 
     eprint("len(p):", len(p))
-    import IPython; IPython.embed()
+
+    from IPython import embed
+    from traitlets.config import get_config
+    c = get_config()
+    c.InteractiveShellEmbed.colors = "Linux"
+    embed(config=c)
 
 
 if __name__ == "__main__":
     # print("python version:", sys.version)  # 3.7
     cli()
-
-
-#
-#        if status:
-#            map_count = len(parent_map)
-#            all_parents = [p for p in parent_map.values() if p]
-#            unique_parents = set(all_parents)
-#            none_count = map_count - len(all_parents)
-#            with_parent_count = map_count - none_count
-#            assert with_parent_count == len(all_parents)
-#            eprint("Done. {0} id->parent mappings saved in:\n{1}\n".format(map_count, shelve_file))
-#            eprint("# of id's:", map_count)
-#            eprint("# of id's with no parent:", none_count)
-#            eprint("# of id's with parent:", with_parent_count)
-#            eprint("# of unique parents:", len(unique_parents))
-#
-#    await reader(command, parents, status, debug, exit_early)
-
-
-#@cli.command()
-#@click.argument("poolname", type=str, nargs=1)
-#@click.option("--no-status", is_flag=True)
-#@click.option("--debug", is_flag=True)
-#@click.option("--exit-early", type=int, help="(for testing)")
-#def dmu_dnode_L0(poolname, no_status, debug, exit_early):
-#    status = not no_status
-#    assert len(poolname.split()) == 1
-#    assert '/' in poolname
-#    if status:
-#        eprint("gathering all L0 entries from DMU dnode")
-#
-#    asyncio.run(parse_zdb_l0(poolname, status, debug, exit_early))
-#
-#
-#@cli.command()
-#@click.argument("poolname", type=str, nargs=1)
-#@click.argument("parents", type=int, nargs=-1)
-#@click.option("--no-status", is_flag=True)
-#@click.option("--debug", is_flag=True)
-#@click.option("--exit-early", type=int, help="(for testing)")
-#def parents(poolname, parents, no_status, debug, exit_early):
-#    status = not no_status
-#    assert len(poolname.split()) == 1
-#    assert '/' in poolname
-#    if status:
-#        eprint("gathering all id->parent mappings")
-#        if parents:
-#            eprint("looking for id's with parent(s):", *parents)
-#
-#    asyncio.run(parse_zdb_parents(poolname, parents, status, debug, exit_early))
-
-
-
-
-#@attr.s(auto_attribs=True)
-#class dmu_dnode():
-#    offset: int
-#    level: int
-#    dva: dict
-#    checksum: str
-#    compress: str
-#    encryption: bool
-#    size: str
-#    birth: str
-#    fill: int
-#
-#
-#async def parse_zdb_l0(poolname, status, debug, exit_early):
-#    command = ["zdb", "-L", "-ddddbbbbvv", poolname, "0"]
-#    if debug: eprint(command)
-#    async def reader(command, status, debug, exit_early):
-#        timestamp = int(time.time())
-#        shelve_file = generate_shelve_file('L0_list', poolname, timestamp)
-#        node_list = []
-#        pad = 25 * ' '
-#        marker = b'[L0 DMU dnode]'
-#        async for line in run_command(command):
-#            if debug:
-#                eprint(line)
-#            if b"L0 HOLE" in line:
-#                continue
-#            if marker in line:
-#                line = line.split()
-#                dva1 = line[2].split(b'<')[-1][:-1]
-#                dva2 = line[2].split(b'<')[-1][:-1]
-#                d = dmu_dnode(
-#                    offset=line[0],
-#                    level=line[1][-1],
-#                    dva={0: dva1, 1: dva2},
-#                    checksum=line[7],
-#                    compress=line[8],
-#                    encryption=(True if line[9] == b'encrypted' else False),
-#                    size=line[14].split(b'=')[-1],
-#                    birth=line[15].split(b'=')[-1],
-#                    fill=line[16].split(b'=')[-1])
-#
-#                node_list.append(d)
-#                if status and not debug:
-#                    lpm = len(node_list)
-#                    print_status(d.offset, pad, lpm, timestamp)
-#
-#        with open(shelve_file, 'wb') as fh:
-#            pickle.dump(node_list, fh)
-#
-#        if status:
-#            dnode_count = len(node_list)
-#            eprint("Done. {0} L0 dnodes saved in:\n{1}\n".format(dnode_count, shelve_file))
-#
-#    await reader(command, status, debug, exit_early)
-
