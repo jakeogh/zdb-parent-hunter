@@ -10,8 +10,8 @@ from typing import Any
 from pathlib import Path
 from itertools import zip_longest
 import copy
-#import shelve   # shelve is broken, with writeback=True, it's not waiting until I call .sync() to persist to disk
 import attr
+import cattr
 from attr.converters import optional
 #import cattr    # noqa: F401
 from sqlalchemy import create_engine
@@ -39,7 +39,11 @@ eprint = print
 
 
 async def run_command(args):
-    eprint("command:", ' '.join(args[:15]), "...")
+    truncate = 50
+    if len(args) > truncate:
+        eprint("command:", ' '.join(args[:truncate]), "...")
+    else:
+        eprint("command:", ' '.join(args))
     process = await asyncio.create_subprocess_exec(*args, stdout=PIPE)
     #print(process.returncode)  # None
     #time.sleep(3)  # long enough
@@ -71,10 +75,10 @@ def generate_db_file(poolname):
     timestamp = int(time.time())
     data_dir = Path(os.path.expanduser("~/.zfs_index"))
     data_dir.mkdir(exist_ok=True)
-    data_file = Path("_".join([poolname, str(timestamp), str(os.getpid()), '.pickle']))
+    data_file = Path("_".join([poolname, str(timestamp), str(os.getpid()), '.sqlite']))
     db_file = data_dir / data_file
     db_file.parent.mkdir(exist_ok=True)
-    return str(db_file)  # as of py 3.7, shelve isnt supporting path-like objects
+    return str(db_file)
 
 
 def strify(thing):
@@ -297,6 +301,10 @@ def mutate_if_match(line, dn, writeback, oline):
     return False
 
 
+def add(sdn, session):
+    session.add(sdn)  # previous sdn
+
+
 def commit(sdn, session):
     session.add(sdn)  # previous sdn
     session.commit()  # commit it
@@ -305,26 +313,28 @@ def commit(sdn, session):
 def retrieve(inode, session):
     query = session.query(SQADnode).filter(SQADnode.inode == inode)
     sdn = query.one()
-    print("sdn:", sdn)
-    print("type(sdn):", type(sdn))
+    #print("sdn:", sdn)
+    #print("type(sdn):", type(sdn))
     return sdn
 
 
 def sdn_to_dn(sdn):
-    print("sdn:", sdn)
-    import IPython; IPython.embed()
+    #print("sdn:", sdn)
+    sdn_values = {a: getattr(sdn, a) for a in dir(sdn) if (a[0] != '_') and (a != 'metadata') and (a != "sqla")}
+    dn = Dnode(sdn, **sdn_values)
+    #import IPython; IPython.embed()
+    return dn
 
 
 async def reader(command, status, debug, exit_early, poolname, db_file, session, modify_existing):
-    #dnode_map = shelve.open(db_file, writeback=True)  # too slow unless we call sync() only once in awhile
-    #modify_existing = bool(dnode_map)
-    #timestamp = int(time.time())
+    timestamp = time.time()
     pad = 25 * ' '
     marker = norm(b'    Object  lvl   iblk   dblk  dsize  dnsize  lsize   %full  type\n')
     found_marker = False
     found_id = False
     object_id = None
     line_num = 0
+    count = 0
     dn = None
     async for line in run_command(command):
         oline = line
@@ -358,13 +368,10 @@ async def reader(command, status, debug, exit_early, poolname, db_file, session,
             if dn:  # save prev dn
                 #eprint("saving object_id:", object_id)
                 assert object_id is not None
-                #if modify_existing:  # modify existing dn
-                #    assert object_id in dnode_map.keys()
-                #else:
-                #   dnode_map[object_id] = dn  # limitation of shelve, keys are str()
-                commit(sdn, session)
+                #commit(sdn, session)
+                add(sdn, session)
+                count += 1
 
-                #import IPython; IPython.embed()
                 dn = None
                 object_id = None
 
@@ -378,10 +385,10 @@ async def reader(command, status, debug, exit_early, poolname, db_file, session,
                     dn_type = str(b" ".join(sline[7:]), encoding='utf8')
                     sdn = SQADnode()
                     dn = Dnode(sdn, object_id, *sline[:7], dn_type)
+                    count += 1
 
-            #if status:
-            #    lpm = len(dnode_map)
-            #    print_status(object_id, pad, lpm, timestamp)
+            if status:
+                print_status(object_id, pad, count, timestamp)
 
             found_id = True
             found_marker = False
@@ -390,34 +397,32 @@ async def reader(command, status, debug, exit_early, poolname, db_file, session,
         if line == marker:
             found_marker = True
 
-        #if exit_early:
-        #    lpm = len(dnode_map)
-        #    if lpm >= exit_early:
-        #        import warnings
-        #        warnings.filterwarnings("ignore")
-        #        eprint("\n\nExiting early after {0} id's".format(lpm))
-        #        if not modify_existing:
-        #            if object_id not in dnode_map.keys():
-        #                dnode_map[object_id] = dn
-        #        commit(sdn, session)
-        #        break
-
-    #if not modify_existing:
-    #    if object_id not in dnode_map.keys():
-    #        dnode_map[object_id] = dn
+        if exit_early:
+            if count >= exit_early:
+                import warnings
+                warnings.filterwarnings("ignore")
+                eprint("\n\nExiting early after {0} id's".format(count))
+                break
 
     commit(sdn, session)
 
-    #if debug > 1:
-    #    print("dnode_map:")
-    #    pprint.pprint(dnode_map)
-
     if status:
-        sql_count = session.query(SQADnode)
-        eprint("Done. {0} dnode records saved in:\n{1}\n".format(sql_count, db_file))
+        sql_count = session.query(SQADnode).count()
+        eprint("Done. count:{0} total:{0} dnode records saved in:\n{1}\n".format(count, sql_count, db_file))
 
-    #dnode_map.close()
     return
+
+
+def create_session(poolname=None, db_file=None, debug=False):
+    if not db_file:
+        if poolname:
+            db_file = generate_db_file(poolname)
+
+    db_path = 'sqlite:///' + db_file
+    ENGINE = create_engine(db_path, echo=bool(debug))
+    Base.metadata.create_all(ENGINE)
+    Session = sessionmaker(bind=ENGINE)
+    return Session()
 
 
 async def parse_zdb_dnodes(poolname, inodes, status, debug, exit_early):
@@ -428,36 +433,25 @@ async def parse_zdb_dnodes(poolname, inodes, status, debug, exit_early):
     for inode in inodes:
         command.append(str(inode))
 
-
-    #DB_FILE = "/home/user/.zfs_index/sqlite." + str(time.time()) + '.db'
-    #DB_FILE = "/home/user/.zfs_index/sqlite.db"
-    DB_FILE = generate_db_file(poolname) + '.sqlite'
-    DB_PATH = 'sqlite:///' + DB_FILE
-    ENGINE = create_engine(DB_PATH, echo=True)
-    Base.metadata.create_all(ENGINE)
-    Session = sessionmaker(bind=ENGINE)
-    session = Session()
+    session = create_session(poolname=poolname, db_file=None, debug=debug)
 
     await reader(command, status, debug, exit_early, poolname, db_file, session, modify_existing=False)
 
     file_dnodes = []
-    #dnode_map = shelve.open(db_file, writeback=False)
-    dnode_map = session.query(SQADnode)
-    for record in dnode_map:
-        print(record)
-        if record.type == 'ZFS plain file':
-            file_dnodes.append(record.inode)
-    #import IPython; IPython.embed()
+    file_dnodes = session.query(SQADnode).filter(SQADnode.type == "ZFS plain file")
 
     #debug = 2
     exit_early = False
     inodes = None
 
-    file_dnodes = sorted(file_dnodes, key=int)
-    for group in grouper(file_dnodes, 2000):
+    file_dnodes = sorted([f.inode for f in file_dnodes], key=int)
+    for group in grouper(file_dnodes, 3000):
         group = [str(g) for g in group if g]
         next_command = path_command + group
         await reader(next_command, status, debug, exit_early, poolname, db_file, session, modify_existing=True)
+
+    #import IPython; IPython.embed()
+    session.close()
 
 
 def validate_pool(ctx, param, value):
@@ -491,11 +485,12 @@ def index(poolname, inodes, no_status, debug, exit_early):
 
 
 @cli.command()
-@click.argument("pickle", type=click.Path(exists=True, dir_okay=False, allow_dash=True))
-def load(pickle):
-    #p = shelve.open(pickle)
-    p = False
-    eprint("len(p):", len(p))
+@click.argument("db_file", type=click.Path(exists=True, dir_okay=False, allow_dash=True))
+def load(db_file):
+    debug = False
+    session = create_session(poolname=None, db_file=db_file, debug=debug)
+    p = session.query(SQADnode)
+    #eprint("len(p):", len(p))
 
     from IPython import embed
     from traitlets.config import get_config
