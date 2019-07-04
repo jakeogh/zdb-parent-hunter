@@ -1,17 +1,17 @@
 #!/usr/bin/env python3.7
 
+from memory_profiler import profile
 import sys
 import os
 import time
 import asyncio
 from asyncio.subprocess import PIPE
-import pprint
+#import pprint
 from typing import Any
 from pathlib import Path
 from itertools import zip_longest
 import copy
 import attr
-import cattr
 from attr.converters import optional
 #import cattr    # noqa: F401
 from sqlalchemy import create_engine
@@ -28,14 +28,9 @@ Base = declarative_base()
 #pylint: disable=multiple-statements
 #pylint: disable=invalid-name
 
-_print = print
 
-
-def print(*args, **kwargs):
-    _print(*args, file=sys.stderr, **kwargs)
-
-
-eprint = print
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 
 async def run_command(args):
@@ -45,15 +40,7 @@ async def run_command(args):
     else:
         eprint("command:", ' '.join(args))
     process = await asyncio.create_subprocess_exec(*args, stdout=PIPE)
-    #print(process.returncode)  # None
-    #time.sleep(3)  # long enough
-    #print(process.returncode)  # still None
-    #if process.returncode is not None:  # still None
-    #    quit(1)
-
     async for line in process.stdout:
-        #if process.returncode is not None: # stillllll None
-        #    if line:
         yield line
 
 
@@ -150,9 +137,6 @@ class Dnode():
 
         super().__setattr__(name, value)
         self.sqla.__setattr__(name, value)
-
-    def seralize(self):
-        return cattr.unstructure(self)
 
 
 def generate_sqla(cls):
@@ -301,31 +285,19 @@ def mutate_if_match(line, dn, writeback, oline):
     return False
 
 
-def add(sdn, session):
-    session.add(sdn)  # previous sdn
-
-
-def commit(sdn, session):
-    session.add(sdn)  # previous sdn
-    session.commit()  # commit it
-
-
 def retrieve(inode, session):
     query = session.query(SQADnode).filter(SQADnode.inode == inode)
     sdn = query.one()
-    #print("sdn:", sdn)
-    #print("type(sdn):", type(sdn))
     return sdn
 
 
 def sdn_to_dn(sdn):
-    #print("sdn:", sdn)
     sdn_values = {a: getattr(sdn, a) for a in dir(sdn) if (a[0] != '_') and (a != 'metadata') and (a != "sqla")}
     dn = Dnode(sdn, **sdn_values)
-    #import IPython; IPython.embed()
     return dn
 
 
+@profile(precision=4)  # python3.7 -m memory_profile does nothing with or without this
 async def reader(command, status, debug, exit_early, poolname, db_file, session, modify_existing):
     timestamp = time.time()
     pad = 25 * ' '
@@ -356,20 +328,16 @@ async def reader(command, status, debug, exit_early, poolname, db_file, session,
 
             if debug: eprint("unmatched line:", line)
 
-        #if not len(dnode_map.keys()) % 500000:
-        #    if dnode_map.keys():
-        #        if debug:
-        #            eprint("saving:", db_file)
-        #        dnode_map.sync()
+        if not count % 100000:
+            #session.flush()  # does not effect memory usage switching to fluch here and commenting out .commit()
+            session.commit()
 
         if found_marker:
             assert not found_id
             sline = line.split()
             if dn:  # save prev dn
-                #eprint("saving object_id:", object_id)
                 assert object_id is not None
-                #commit(sdn, session)
-                add(sdn, session)
+                session.add(sdn)
                 count += 1
 
                 dn = None
@@ -404,20 +372,16 @@ async def reader(command, status, debug, exit_early, poolname, db_file, session,
                 eprint("\n\nExiting early after {0} id's".format(count))
                 break
 
-    commit(sdn, session)
+    session.commit(sdn)
 
     if status:
         sql_count = session.query(SQADnode).count()
-        eprint("Done. count:{0} total:{0} dnode records saved in:\n{1}\n".format(count, sql_count, db_file))
+        eprint("Done. count:{0} total:{1} dnode records saved in:\n{2}\n".format(count, sql_count, db_file))
 
     return
 
 
-def create_session(poolname=None, db_file=None, debug=False):
-    if not db_file:
-        if poolname:
-            db_file = generate_db_file(poolname)
-
+def create_session(db_file, debug=False):
     db_path = 'sqlite:///' + db_file
     ENGINE = create_engine(db_path, echo=bool(debug))
     Base.metadata.create_all(ENGINE)
@@ -433,7 +397,8 @@ async def parse_zdb_dnodes(poolname, inodes, status, debug, exit_early):
     for inode in inodes:
         command.append(str(inode))
 
-    session = create_session(poolname=poolname, db_file=None, debug=debug)
+    db_file = generate_db_file(poolname)
+    session = create_session(db_file, debug=debug)
 
     await reader(command, status, debug, exit_early, poolname, db_file, session, modify_existing=False)
 
@@ -490,7 +455,6 @@ def load(db_file):
     debug = False
     session = create_session(poolname=None, db_file=db_file, debug=debug)
     p = session.query(SQADnode)
-    #eprint("len(p):", len(p))
 
     from IPython import embed
     from traitlets.config import get_config
